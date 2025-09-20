@@ -52,10 +52,12 @@ MODEL_PATH = os.path.join(MODEL_DIR, "multi_modal_model_clean.pth")
 
 if os.path.exists(MODEL_PATH):
     state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
-    model.load_state_dict(state_dict)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
     model.to(device)
     model.eval()
-    print("✅ Model loaded successfully!")
+    print("✅ Model loaded with strict=False")
+    print("⚠️ Missing keys:", missing)
+    print("⚠️ Unexpected keys:", unexpected)
 else:
     print(f"⚠️ Model file not found at {MODEL_PATH}")
 
@@ -125,3 +127,4 @@ async def predict_issue(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
