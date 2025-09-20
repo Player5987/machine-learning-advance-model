@@ -5,26 +5,29 @@ import torch
 import os
 import pandas as pd
 from PIL import Image
-from transformers import BertTokenizer
 from torchvision import transforms
+from transformers import BertTokenizer
 from model import MultiModalClassifier, TextEncoder, ImageEncoder, MetadataEncoder
 
 # ✅ Kaggle API
 from kaggle.api.kaggle_api_extended import KaggleApi
 
+# -------------------------------
+# FastAPI app
+# -------------------------------
 app = FastAPI(title="MultiModal Prediction API")
 
-# ✅ Enable CORS so frontend (Netlify) can connect
+# ✅ Enable CORS so frontend (Netlify, etc.) can connect
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or restrict to your frontend domain
+    allow_origins=["*"],  # or restrict to ["https://swarajsetu.netlify.app"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------------
-# Download model from Kaggle
+# Download model from Kaggle if missing
 # -------------------------------
 MODEL_PATH = "models/multi_modal_model.pth"
 
@@ -33,19 +36,18 @@ if not os.path.exists(MODEL_PATH):
     print("📥 Downloading model from Kaggle...")
 
     api = KaggleApi()
-    api.authenticate()  # Needs kaggle.json in ~/.kaggle
+    api.authenticate()  # Needs KAGGLE_USERNAME + KAGGLE_KEY in Render
 
-    # Replace with your dataset name
     api.dataset_download_file(
-        "gaurishmalhotra/multimodel",
-        file_name="multi_modal_model.pth",
+        "gaurishmalhotra/multimodel",   # ✅ dataset slug for your .pth file
+        file_name="multi_modal_model.pth",  # ✅ exact filename inside dataset
         path="models"
     )
 
-    # Kaggle downloads as .zip → unzip
-    import zipfile
+    # Kaggle saves as .zip → extract if zipped
     zip_path = MODEL_PATH + ".zip"
     if os.path.exists(zip_path):
+        import zipfile
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall("models")
         os.remove(zip_path)
@@ -64,7 +66,7 @@ model = MultiModalClassifier(
     category_classes=7, priority_classes=4
 )
 
-# ✅ Torch 2.6 fix
+# ✅ Torch 2.6 fix (weights_only=False)
 state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
 model.load_state_dict(state_dict)
 model.to(device)
@@ -85,7 +87,7 @@ image_transform = transforms.Compose([
 ])
 
 # -------------------------------
-# Predict Endpoint
+# Prediction endpoint
 # -------------------------------
 @app.post("/predict")
 async def predict_issue(
@@ -95,27 +97,27 @@ async def predict_issue(
     file: UploadFile = File(...)
 ):
     try:
-        # 1. Text
+        # 1. Encode text
         text_inputs = tokenizer(description, return_tensors="pt", padding=True, truncation=True)
         text_emb = text_encoder(text_inputs["input_ids"], text_inputs["attention_mask"])
 
-        # 2. Image
+        # 2. Encode image
         img = Image.open(file.file).convert("RGB")
         img = image_transform(img).unsqueeze(0)
         image_emb = image_encoder(img)
 
-        # 3. Metadata
+        # 3. Encode metadata
         meta = torch.tensor([[latitude, longitude]], dtype=torch.float32)
         meta_emb = meta_encoder(meta)
 
-        # 4. Model Prediction
+        # 4. Model prediction
         with torch.no_grad():
             category_logits, priority_logits = model(text_emb, image_emb, meta_emb)
 
         category_pred = torch.argmax(category_logits, dim=1).item()
         priority_pred = torch.argmax(priority_logits, dim=1).item()
 
-        # Save record
+        # 5. Save request/response for logs
         df = pd.DataFrame([{
             "description": description,
             "latitude": latitude,
@@ -124,7 +126,8 @@ async def predict_issue(
             "priority_pred": priority_pred
         }])
         os.makedirs("data/user_reports", exist_ok=True)
-        df.to_csv("data/user_reports/predictions.csv", mode="a",
+        df.to_csv("data/user_reports/predictions.csv",
+                  mode="a",
                   header=not os.path.exists("data/user_reports/predictions.csv"),
                   index=False)
 
@@ -135,3 +138,4 @@ async def predict_issue(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
