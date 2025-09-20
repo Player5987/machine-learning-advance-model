@@ -7,7 +7,7 @@ from transformers import BertTokenizer
 from torchvision import transforms
 from PIL import Image
 import pandas as pd
-
+import predict_api
 # -------------------------------
 # Initialize FastAPI app
 # -------------------------------
@@ -124,3 +124,4 @@ async def predict_issue(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
