@@ -10,6 +10,14 @@ import pandas as pd
 from kaggle.api.kaggle_api_extended import KaggleApi
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+  CORSMiddleware,
+  allow_origins=["*"],  # dev: allow all. For production list allowed domains.
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
+)
 
 # -------------------------------
 # Step 1: Download model from Kaggle if not present
@@ -129,5 +137,6 @@ async def predict_issue(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 
