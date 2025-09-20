@@ -13,6 +13,19 @@ import pandas as pd
 # Initialize FastAPI app
 # -------------------------------
 app = FastAPI(title="MultiModal Prediction API", version="1.0")
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# 🔥 Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # for testing, allow all
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -------------------------------
 # Paths & constants
@@ -125,5 +138,6 @@ async def predict_issue(
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
 
 
