@@ -1,44 +1,34 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
-import kaggle
-import os
 import torch
+import os
+from model import MultiModalClassifier, TextEncoder, ImageEncoder, MetadataEncoder
 from transformers import BertTokenizer
 from torchvision import transforms
 from PIL import Image
 import pandas as pd
 
-# import your model classes
-from model import MultiModalClassifier, TextEncoder, ImageEncoder, MetadataEncoder
-
-app = FastAPI()
+# -------------------------------
+# Initialize FastAPI app
+# -------------------------------
+app = FastAPI(title="MultiModal Prediction API", version="1.0")
 
 # -------------------------------
-# Kaggle dataset + model setup
+# Paths & constants
 # -------------------------------
-DATA_DIR = "data"
 MODEL_DIR = "models"
-os.makedirs(DATA_DIR, exist_ok=True)
+MODEL_PATH = os.path.join(MODEL_DIR, "multi_modal_model_clean.pth")
+DATA_DIR = "data/user_reports"
+
 os.makedirs(MODEL_DIR, exist_ok=True)
-
-DATASET = "gaurishmalhotra/dataofimagesandtext"   # your images + csv data
-MODELSET = "gaurishmalhotra/multimodel"           # your trained model (.pth file)
-
-# Download dataset if not already present
-if not os.listdir(DATA_DIR):
-    kaggle.api.dataset_download_files(DATASET, path=DATA_DIR, unzip=True)
-    print("✅ Dataset downloaded from Kaggle")
-
-# Download model if not already present
-if not os.listdir(MODEL_DIR):
-    kaggle.api.dataset_download_files(MODELSET, path=MODEL_DIR, unzip=True)
-    print("✅ Model downloaded from Kaggle")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # -------------------------------
-# Load model
+# Load model and tokenizer
 # -------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Instantiate model components
 text_encoder = TextEncoder(out_dim=128)
 image_encoder = ImageEncoder(out_dim=128)
 meta_encoder = MetadataEncoder(input_dim=2, out_dim=32)
@@ -47,22 +37,25 @@ model = MultiModalClassifier(
     category_classes=7, priority_classes=4
 )
 
-# Adjust file name if different inside your Kaggle dataset
-MODEL_PATH = os.path.join(MODEL_DIR, "multi_modal_model_clean.pth")
-
+# Load trained weights safely
 if os.path.exists(MODEL_PATH):
-    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    model.to(device)
-    model.eval()
-    print("✅ Model loaded with strict=False")
-    print("⚠️ Missing keys:", missing)
-    print("⚠️ Unexpected keys:", unexpected)
+    try:
+        state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        model.to(device)
+        model.eval()
+        print("✅ Model loaded successfully with strict=False")
+        print("⚠️ Missing keys:", missing)
+        print("⚠️ Unexpected keys:", unexpected)
+    except Exception as e:
+        print(f"⚠️ Failed to load model weights: {e}")
 else:
     print(f"⚠️ Model file not found at {MODEL_PATH}")
 
+# Load tokenizer
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
+# Image preprocessing
 image_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -71,16 +64,19 @@ image_transform = transforms.Compose([
 ])
 
 # -------------------------------
-# Endpoints
+# Health & root endpoints
 # -------------------------------
-@app.get("/dataset-info")
-async def dataset_info():
-    if not os.listdir(DATA_DIR):
-        return JSONResponse({"error": "Dataset not loaded"}, status_code=500)
-    files = os.listdir(DATA_DIR)
-    return {"message": "Dataset downloaded", "files": files}
+@app.get("/")
+async def root():
+    return {"message": "✅ API is running. Use /predict to get predictions."}
 
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "device": str(device)}
 
+# -------------------------------
+# Prediction endpoint
+# -------------------------------
 @app.post("/predict")
 async def predict_issue(
     description: str = Form(...),
@@ -89,28 +85,27 @@ async def predict_issue(
     file: UploadFile = File(...)
 ):
     try:
-        # 1. Text
+        # 1. Process text
         text_inputs = tokenizer(description, return_tensors="pt", padding=True, truncation=True)
         text_emb = text_encoder(text_inputs["input_ids"], text_inputs["attention_mask"])
 
-        # 2. Image
+        # 2. Process image
         img = Image.open(file.file).convert("RGB")
         img = image_transform(img).unsqueeze(0)
         image_emb = image_encoder(img)
 
-        # 3. Metadata
+        # 3. Process metadata
         meta = torch.tensor([[latitude, longitude]], dtype=torch.float32)
         meta_emb = meta_encoder(meta)
 
-        # 4. Inference
+        # 4. Run model
         with torch.no_grad():
             category_logits, priority_logits = model(text_emb, image_emb, meta_emb)
 
         category_pred = torch.argmax(category_logits, dim=1).item()
         priority_pred = torch.argmax(priority_logits, dim=1).item()
 
-        # Save result
-        os.makedirs("data/user_reports", exist_ok=True)
+        # 5. Save request + predictions
         df = pd.DataFrame([{
             "description": description,
             "latitude": latitude,
@@ -118,13 +113,14 @@ async def predict_issue(
             "category_pred": category_pred,
             "priority_pred": priority_pred
         }])
-        df.to_csv("data/user_reports/predictions.csv",
-                  mode="a",
-                  header=not os.path.exists("data/user_reports/predictions.csv"),
+        df.to_csv(os.path.join(DATA_DIR, "predictions.csv"),
+                  mode="a", header=not os.path.exists(os.path.join(DATA_DIR, "predictions.csv")),
                   index=False)
 
-        return {"category_prediction": category_pred, "priority_prediction": priority_pred}
+        return JSONResponse({
+            "category_prediction": category_pred,
+            "priority_prediction": priority_pred
+        })
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
